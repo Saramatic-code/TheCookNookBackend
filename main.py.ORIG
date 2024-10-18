@@ -1,0 +1,83 @@
+from fastapi import FastAPI, Depends, HTTPException
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey
+from sqlalchemy.orm import sessionmaker, declarative_base, Session, relationship
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins, or restrict it to your frontend origin
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# SQLAlchemy setup using psycopg2
+DATABASE_URL = "postgresql://bryanjones:jessup17@localhost:5601/TheCookNookAppDatabase"
+
+
+# Create an engine and a session
+engine = create_engine(DATABASE_URL, echo=True)
+SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+
+# Define the base model
+Base = declarative_base()
+
+# Define the Recipe model
+class Recipe(Base):
+    __tablename__ = "recipes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, index=True)
+
+    # Establish relationship with RecipeStep
+    # steps = relationship("RecipeStep", back_populates="recipe", order_by="RecipeStep.recipeorder")
+
+# Define the RecipeStep model
+class RecipeStep(Base):
+    __tablename__ = "recipestep"
+
+    recipeInstructionid = Column(Integer, primary_key=True, index=True)
+    recipestepname = Column(String, index=True)
+    recipeorder = Column(Integer, index=True)
+    recipeid = Column(Integer, ForeignKey("recipe.recipeid"))
+
+    # Relationship back to Recipe
+    # recipe = relationship("Recipe", back_populates="steps")
+
+# Dependency to get the session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+@app.get("/recipes")
+def get_recipes(db: Session = Depends(get_db)):
+    recipes = db.query(Recipe).all()
+    return {"recipes": [{"id": recipe.id, "title": recipe.title} for recipe in recipes]}
+
+# Updated route to fetch a recipe by ID, including steps
+# @app.get("/recipes/{id}")
+# def get_recipe_by_id(id: int, db: Session = Depends(get_db)):
+#     recipe = db.query(Recipe).filter(Recipe.recipeid == id).first()
+
+#     if recipe is None:
+#         raise HTTPException(status_code=404, detail="Recipe not found")
+
+#     # Include steps in the response, ordered by recipeorder
+#     steps = [
+#         {"recipestepid": step.recipestepid, "recipestepname": step.recipestepname, "recipeorder": step.recipeorder}
+#         for step in recipe.steps
+#     ]
+
+#     return {
+#     "recipeid": recipe.recipeid,
+#         "recipename": recipe.recipename,
+#         "steps": steps
+#     }
+
+

@@ -1,0 +1,495 @@
+from fastapi import FastAPI, Depends, HTTPException
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Table, Boolean
+from sqlalchemy.orm import sessionmaker, declarative_base, Session, relationship
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List, Optional
+
+# FastAPI setup
+app = FastAPI()
+
+# CORS middleware to allow cross-origin resource sharing
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins, or restrict it to your frontend origin
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# SQLAlchemy setup - connecting to the PostgreSQL database
+DATABASE_URL = "postgresql://bryanjones:jessup17@localhost:5601/TheCookNookAppDatabase"
+engine = create_engine(DATABASE_URL, echo=True)
+SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+
+# Define the base model
+Base = declarative_base()
+
+# ------------------------ Association Tables (Many-to-Many) ------------------------
+# Many-to-Many relationship between Recipe and Ingredient
+recipe_ingredients = Table(
+    'recipe_ingredients', Base.metadata,
+    Column('recipe_id', Integer, ForeignKey('recipes.id'), primary_key=True),
+    Column('ingredient_id', Integer, ForeignKey('ingredients.id'), primary_key=True)
+)
+
+# Many-to-Many relationship between Recipe and Category
+recipe_categories = Table(
+    'recipe_categories', Base.metadata,
+    Column('recipe_id', Integer, ForeignKey('recipes.id'), primary_key=True),
+    Column('category_id', Integer, ForeignKey('categories.id'), primary_key=True)
+)
+
+# Many-to-Many relationship between Recipe and Tag
+recipe_tags = Table(
+    'recipe_tags', Base.metadata,
+    Column('recipe_id', Integer, ForeignKey('recipes.id'), primary_key=True),
+    Column('tag_id', Integer, ForeignKey('tags.id'), primary_key=True)
+)
+
+# ------------------------ Database Models ------------------------
+
+# Recipe model
+class Recipe(Base):
+    __tablename__ = "recipes"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    title = Column(String, index=True)
+    prep_time_value = Column(Integer)
+    prep_time_unit = Column(String(10))
+    cook_time_value = Column(Integer)
+    cook_time_unit = Column(String(10))
+    servings = Column(Integer)
+    image = Column(String, nullable=True)
+    deleted = Column(Boolean, default=False)  # Soft delete flag
+
+    # One-to-Many relationship: Recipe has multiple steps
+    instructions = relationship("RecipeStep", back_populates="recipe", order_by="RecipeStep.step_number", cascade="all, delete-orphan")
+
+    # One-to-One relationship: Recipe has one NutritionFacts entry
+    nutrition_facts = relationship("NutritionFacts", back_populates="recipe", uselist=False, cascade="all, delete-orphan")
+
+    # Many-to-Many relationships: Recipe can have many ingredients, categories, and tags
+    ingredients = relationship("Ingredient", secondary=recipe_ingredients, back_populates="recipes")
+    categories = relationship("Category", secondary=recipe_categories, back_populates="recipes")
+    tags = relationship("Tag", secondary=recipe_tags, back_populates="recipes")
+
+# Ingredient model
+class Ingredient(Base):
+    __tablename__ = "ingredients"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    item = Column(String(100), index=True)
+    quantity = Column(String(50))
+    notes = Column(String(255))
+    price = Column(Integer)
+    currency = Column(String(3))
+
+    # Many-to-Many relationship with Recipe
+    recipes = relationship("Recipe", secondary=recipe_ingredients, back_populates="ingredients")
+
+# Category model (Many-to-Many with Recipe)
+class Category(Base):
+    __tablename__ = "categories"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    name = Column(String(50), unique=True, index=True)
+
+    # Many-to-Many relationship with Recipe
+    recipes = relationship("Recipe", secondary=recipe_categories, back_populates="categories")
+
+# Tag model (Many-to-Many with Recipe)
+class Tag(Base):
+    __tablename__ = "tags"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    name = Column(String(50), unique=True, index=True)
+
+    # Many-to-Many relationship with Recipe
+    recipes = relationship("Recipe", secondary=recipe_tags, back_populates="tags")
+
+# RecipeStep model (One-to-Many with Recipe)
+class RecipeStep(Base):
+    __tablename__ = "instructions"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    recipe_id = Column(Integer, ForeignKey("recipes.id"), index=True)
+    step_number = Column(Integer, index=True)
+    instruction = Column(String, index=True)
+    deleted = Column(Boolean, default=False)  # Soft delete flag
+
+    # Relationship with Recipe
+    recipe = relationship("Recipe", back_populates="instructions")
+
+# NutritionFacts model (One-to-One with Recipe)
+class NutritionFacts(Base):
+    __tablename__ = "nutrition_facts"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    recipe_id = Column(Integer, ForeignKey("recipes.id"))
+    calories = Column(String(50))
+    fat = Column(String(50))
+    carbohydrates = Column(String(50))
+    protein = Column(String(50))
+    deleted = Column(Boolean, default=False)  # Soft delete flag
+
+    # Relationship with Recipe
+    recipe = relationship("Recipe", back_populates="nutrition_facts")
+
+# Create all tables
+Base.metadata.create_all(bind=engine)
+
+# Dependency to get the session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# ------------------------ Pydantic Models ------------------------
+# Pydantic model for Ingredient
+class IngredientCreate(BaseModel):
+    item: str
+    quantity: str
+    notes: Optional[str] = None
+    price: float  # Accepting decimals
+    currency: str
+
+# Pydantic model for RecipeStep
+class RecipeStepCreate(BaseModel):
+    step_number: int
+    instruction: str
+
+# Pydantic model for NutritionFacts
+class NutritionFactsCreate(BaseModel):
+    calories: str
+    fat: str
+    carbohydrates: str
+    protein: str
+
+# Pydantic model for Category
+class CategoryCreate(BaseModel):
+    name: str
+
+# Pydantic model for Tag
+class TagCreate(BaseModel):
+    name: str
+
+# Pydantic model for Recipe creation (includes categories and tags)
+class RecipeCreate(BaseModel):
+    title: str
+    prep_time_value: int
+    prep_time_unit: str
+    cook_time_value: int
+    cook_time_unit: str
+    servings: int
+    image: str
+    nutrition_facts: NutritionFactsCreate
+    instructions: List[RecipeStepCreate]
+    ingredients: List[IngredientCreate]
+    categories: List[CategoryCreate]
+    tags: List[TagCreate]
+
+# ------------------------ Routes ------------------------
+
+# ------------------------ GET Routes ------------------------
+### GET Route: Get all recipes ###
+@app.get("/recipes")
+def get_recipes(db: Session = Depends(get_db)):
+    """
+    GET all recipes.
+    Retrieves all recipes from the database, including related ingredients, categories, and tags.
+    Filters recipes that are not soft-deleted (deleted = False) and returns non-deleted instructions and nutrition facts.
+    """
+    recipes = db.query(Recipe).filter(Recipe.deleted.is_(False)).all()
+
+    return {
+        "recipes": [
+            {
+                "id": recipe.id,
+                "title": recipe.title,
+                "prep_time_value": recipe.prep_time_value,
+                "prep_time_unit": recipe.prep_time_unit,
+                "cook_time_value": recipe.cook_time_value,
+                "cook_time_unit": recipe.cook_time_unit,
+                "servings": recipe.servings,
+                "image": recipe.image,
+                "instructions": [
+                    {"id": step.id, "instruction": step.instruction, "step_number": step.step_number}
+                    for step in recipe.instructions if step.deleted == False  # Filter out soft-deleted instructions
+                ],
+                "nutrition_facts": {
+                    "calories": recipe.nutrition_facts.calories,
+                    "fat": recipe.nutrition_facts.fat,
+                    "carbohydrates": recipe.nutrition_facts.carbohydrates,
+                    "protein": recipe.nutrition_facts.protein
+                } if recipe.nutrition_facts and recipe.nutrition_facts.deleted == False else None,
+                "ingredients": [ingredient.item for ingredient in recipe.ingredients],
+                "categories": [category.name for category in recipe.categories],
+                "tags": [tag.name for tag in recipe.tags]  # Include tags in the response
+            }
+            for recipe in recipes
+        ]
+    }
+### End of GET Recipe Route ###
+
+### GET Route: Get a recipe by ID ###
+@app.get("/recipes/{id}")
+def get_recipe_by_id(id: int, db: Session = Depends(get_db)):
+    """
+    GET a recipe by ID.
+    Fetches a recipe by its ID and includes steps, nutrition facts, ingredients, and categories.
+    Filters out soft-deleted instructions and nutrition facts.
+    """
+    recipe = db.query(Recipe).filter(Recipe.id == id, Recipe.deleted == False).first()
+
+    if not recipe:
+        raise HTTPException(status_code=404, detail="Recipe not found")
+
+    return {
+        "id": recipe.id,
+        "title": recipe.title,
+        "prep_time_value": recipe.prep_time_value,
+        "prep_time_unit": recipe.prep_time_unit,
+        "cook_time_value": recipe.cook_time_value,
+        "cook_time_unit": recipe.cook_time_unit,
+        "servings": recipe.servings,
+        "image": recipe.image,
+        "instructions": [
+            {"id": step.id, "instruction": step.instruction, "step_number": step.step_number}
+            for step in recipe.instructions if step.deleted == False  # Filter out soft-deleted instructions
+        ],
+        "nutrition_facts": {
+            "calories": recipe.nutrition_facts.calories,
+            "fat": recipe.nutrition_facts.fat,
+            "carbohydrates": recipe.nutrition_facts.carbohydrates,
+            "protein": recipe.nutrition_facts.protein
+        } if recipe.nutrition_facts and recipe.nutrition_facts.deleted == False else None,
+        "ingredients": [
+            {
+                "id": ingredient.id,
+                "item": ingredient.item,
+                "quantity": ingredient.quantity,
+                "notes": ingredient.notes,
+                "price": ingredient.price,
+                "currency": ingredient.currency
+            }
+            for ingredient in recipe.ingredients
+        ],
+        "categories": [category.name for category in recipe.categories],
+        "tags": [tag.name for tag in recipe.tags]  # Include tags in the response
+    }
+### End of GET Recipe by ID Route ###
+
+
+# ------------------------ POST Routes ------------------------
+
+### POST Route: Create a new recipe ###
+@app.post("/recipes")
+def create_recipe(recipe: RecipeCreate, db: Session = Depends(get_db)):
+    """
+    POST a new recipe.
+    Creates a new recipe in the database, including steps, nutrition facts, ingredients, categories, and tags.
+    """
+    # Check if the recipe already exists by title (case-insensitive search)
+    existing_recipe = db.query(Recipe).filter(Recipe.title.ilike(recipe.title)).first()
+    if existing_recipe:
+        raise HTTPException(status_code=400, detail="Recipe already exists")
+    
+    # Create a new recipe object
+    new_recipe = Recipe(
+        title=recipe.title,
+        prep_time_value=recipe.prep_time_value,
+        prep_time_unit=recipe.prep_time_unit,
+        cook_time_value=recipe.cook_time_value,
+        cook_time_unit=recipe.cook_time_unit,
+        servings=recipe.servings,
+        image=recipe.image  # Save the image field here
+    )
+
+    # Create the associated nutrition facts
+    new_nutrition_facts = NutritionFacts(
+        calories=recipe.nutrition_facts.calories,
+        fat=recipe.nutrition_facts.fat,
+        carbohydrates=recipe.nutrition_facts.carbohydrates,
+        protein=recipe.nutrition_facts.protein,
+        recipe=new_recipe
+    )
+    new_recipe.nutrition_facts = new_nutrition_facts
+
+    # Add each step to the recipe
+    for step in recipe.instructions:
+        new_step = RecipeStep(
+            step_number=step.step_number,
+            instruction=step.instruction,
+            recipe=new_recipe
+        )
+        new_recipe.instructions.append(new_step)
+
+    # Handle ingredients (Many-to-Many relationship)
+    for ingredient_data in recipe.ingredients:
+        existing_ingredient = db.query(Ingredient).filter(Ingredient.item == ingredient_data.item).first()
+        if existing_ingredient:
+            new_recipe.ingredients.append(existing_ingredient)
+        else:
+            new_ingredient = Ingredient(
+                item=ingredient_data.item,
+                quantity=ingredient_data.quantity,
+                notes=ingredient_data.notes,
+                price=ingredient_data.price,
+                currency=ingredient_data.currency
+            )
+            db.add(new_ingredient)
+            new_recipe.ingredients.append(new_ingredient)
+
+    # Handle categories (Many-to-Many relationship)
+    for category_data in recipe.categories:
+        existing_category = db.query(Category).filter(Category.name == category_data.name).first()
+        if existing_category:
+            new_recipe.categories.append(existing_category)
+        else:
+            new_category = Category(name=category_data.name)
+            db.add(new_category)
+            db.flush()  # Flush to get the new category's ID before adding it to the relationship
+            new_recipe.categories.append(new_category)
+
+    # Handle tags (Many-to-Many relationship)
+    for tag_data in recipe.tags:
+        existing_tag = db.query(Tag).filter(Tag.name == tag_data.name).first()
+        if existing_tag:
+            new_recipe.tags.append(existing_tag)
+        else:
+            new_tag = Tag(name=tag_data.name)
+            db.add(new_tag)
+            db.flush()  # Flush to get the new tag's ID before adding it to the relationship
+            new_recipe.tags.append(new_tag)
+
+    # Commit the recipe and associated data
+    db.add(new_recipe)
+    db.commit()
+    db.refresh(new_recipe)
+    
+    return {"message": f"Recipe added: {new_recipe.title}"}
+
+### End of POST Route ###
+
+# ------------------------ DELETE Routes ------------------------
+
+### DELETE Route: Soft delete a recipe ###
+@app.delete("/recipes/{id}")
+def delete_recipe(id: int, db: Session = Depends(get_db)):
+    """
+    DELETE a recipe (soft delete).
+    Sets the deleted flag to True to mark the recipe and related entities as deleted.
+    """
+    recipe = db.query(Recipe).filter(Recipe.id == id).first()
+    
+    if not recipe:
+        raise HTTPException(status_code=404, detail="Recipe not found")
+    
+    # Soft delete the recipe and related entities
+    recipe.deleted = True
+    for instruction in recipe.instructions:
+        instruction.deleted = True
+    if recipe.nutrition_facts:
+        recipe.nutrition_facts.deleted = True
+    
+    db.commit()
+
+    return {"message": f"Recipe with ID {id} has been deleted."}
+
+### End of DELETE Route ###
+
+
+# ------------------------ PUT Routes ------------------------
+
+### PUT Route: Update a recipe ###
+@app.put("/recipes/{id}")
+def update_recipe(id: int, recipe_update: RecipeCreate, db: Session = Depends(get_db)):
+    """
+    Update a recipe.
+    Updates fields of a recipe and its related entities like instructions, ingredients, categories, and tags.
+    """
+    # Fetch the recipe by ID, ensuring it's not soft-deleted
+    recipe = db.query(Recipe).filter(Recipe.id == id, Recipe.deleted == False).first()
+    
+    if not recipe:
+        raise HTTPException(status_code=404, detail="Recipe not found or has been deleted")
+
+    # Update recipe fields
+    recipe.title = recipe_update.title
+    recipe.prep_time_value = recipe_update.prep_time_value
+    recipe.prep_time_unit = recipe_update.prep_time_unit
+    recipe.cook_time_value = recipe_update.cook_time_value
+    recipe.cook_time_unit = recipe_update.cook_time_unit
+    recipe.servings = recipe_update.servings
+    recipe.image = recipe_update.image
+
+    # Update nutrition facts
+    if recipe.nutrition_facts and not recipe.nutrition_facts.deleted:
+        recipe.nutrition_facts.calories = recipe_update.nutrition_facts.calories
+        recipe.nutrition_facts.fat = recipe_update.nutrition_facts.fat
+        recipe.nutrition_facts.carbohydrates = recipe_update.nutrition_facts.carbohydrates
+        recipe.nutrition_facts.protein = recipe_update.nutrition_facts.protein
+    else:
+        raise HTTPException(status_code=400, detail="Nutrition facts are deleted and cannot be updated")
+
+    # Update instructions
+    for step_update in recipe_update.instructions:
+        existing_step = next((step for step in recipe.instructions if step.step_number == step_update.step_number), None)
+        if existing_step and not existing_step.deleted:
+            existing_step.instruction = step_update.instruction
+        else:
+            new_step = RecipeStep(
+                step_number=step_update.step_number,
+                instruction=step_update.instruction,
+                recipe=recipe
+            )
+            recipe.instructions.append(new_step)
+
+    # Update ingredients
+    recipe.ingredients.clear()  # Clear old ingredients
+    for ingredient_data in recipe_update.ingredients:
+        existing_ingredient = db.query(Ingredient).filter(Ingredient.item == ingredient_data.item).first()
+        if existing_ingredient:
+            recipe.ingredients.append(existing_ingredient)
+        else:
+            new_ingredient = Ingredient(
+                item=ingredient_data.item,
+                quantity=ingredient_data.quantity,
+                notes=ingredient_data.notes,
+                price=ingredient_data.price,
+                currency=ingredient_data.currency
+            )
+            db.add(new_ingredient)
+            recipe.ingredients.append(new_ingredient)
+
+    # Update categories
+    recipe.categories.clear()  # Clear old categories
+    for category_data in recipe_update.categories:
+        existing_category = db.query(Category).filter(Category.name == category_data.name).first()
+        if existing_category:
+            recipe.categories.append(existing_category)
+        else:
+            new_category = Category(name=category_data.name)
+            db.add(new_category)
+            recipe.categories.append(new_category)
+
+    # Update tags
+    recipe.tags.clear()  # Clear old tags
+    for tag_data in recipe_update.tags:
+        existing_tag = db.query(Tag).filter(Tag.name == tag_data.name).first()
+        if existing_tag:
+            recipe.tags.append(existing_tag)
+        else:
+            new_tag = Tag(name=tag_data.name)
+            db.add(new_tag)
+            recipe.tags.append(new_tag)
+
+    # Commit the updated recipe and related data
+    db.commit()
+    db.refresh(recipe)
+
+    return {"message": f"Recipe with ID {id} has been updated"}
+### End PUT Route: Update a recipe ###
